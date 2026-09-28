@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Benchmark output (contains cluster endpoints and client hostnames)
+results/
+
+# vm.sh state
+.vm_state
+.vm_known_hosts
+.vm_fetched
+
+# Local tooling
+.memsearch/
+.DS_Store
