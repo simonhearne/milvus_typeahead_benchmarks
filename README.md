@@ -1,4 +1,4 @@
-# typeahead_bench
+# Milvus Typeahead Benchmarks
 
 This project tests which Milvus field, index and query combinations return correct prefix matches for e-commerce typeahead. It then measures their latency at a steady 20 QPS on Zilliz Cloud. Every capability claim is treated as a hypothesis, and the test results are the source of truth.
 
@@ -50,6 +50,34 @@ Each variant is its own field in one collection, because a field can hold only o
 | vec_pop | second collection, `pop_vec=[log1p(pop),0]` | AUTOINDEX IP | ANN ranking plus a `t_inv like "p%"` filter |
 
 Filter-only variants run `query(limit=10, order_by_fields=["popularity:desc"])`. To add a variant, append one `Variant(...)` to `variants.py`.
+
+## Results
+
+These results come from runs on 2026-09-25. The cluster was a Zilliz Cloud Dedicated cluster in AWS eu-west-1, and the client was pymilvus 3.0.2 on a c7i.large VM in the same region (TCP connect ≈1.6 ms). All data was synthetic terms from `terms.py`, and results are top-10 by popularity. Raw per-run output is not in the repo. Run the phases to regenerate it.
+
+### Correctness
+
+"Overlap" is the share of the true top-10 that came back. Phase 3 measured it at 10k rows over 1,200 requests per variant × workload × prefix length (string-prefix and word-start workloads, L = 3–6).
+
+| need | works (overlap ≥ 0.996) | doesn't |
+|---|---|---|
+| whole-string prefix (`sony w…`) | `like "p%"` on raw / INVERTED / TRIE / NGRAM; `vec_pop` ANN + `like` filter | analyzer `text_match` / `phrase_match` and `bm25_std` match whole tokens only (3/9 probes); `bm25_edge` ranks by relevance, not popularity (0.07–0.25, or 0.45–0.58 with over-fetch + client sort) |
+| any-word prefix (`wh…` → "Sony WH-1000XM5") | NGRAM `like_wordstart` (`p%` OR `% p%`); edge / edge_lc `text_match`, `_and`, `_msm`; `arr_prefix.array_contains_all` | `like "% p%"` alone misses the first word; `like "%p%"` returns substrings (0.84–0.93) |
+| raw-case input | `edge_lc` (lowercase analyzer) | every `like` variant is case-sensitive, so normalise on write and on query |
+| typos | `edge*.fuzzy_1/2` return the intended row (9/9 probes) | at the cost of precision (overlap 0.41–0.98), so fuzzy is a fallback, not the primary query |
+
+### Latency
+
+- **10k rows, 20 QPS, all 22 forms:** p95 was 3.6–5.8 ms for every variant, against a `get(pk)` baseline p95 of 3.5 ms. Server-side cost was under ≈2 ms for everything, and at this size index choice makes no measurable difference. `vec_pop` was the slowest (p95 4.7–5.8 ms).
+- **100k rows, 100 QPS:** `ngram.like_prefix` p95 was 4.0 ms at every L, and `ngram.like_wordstart` p95 was 4.2–4.6 ms. There were 0 errors.
+- **Capacity ramp (`phase4_ramp.py`, `ngram.like_prefix`, 100k rows, 100 → 2000 QPS in 60 s steps):** there were 0 errors at every step, and the client stayed below 15 % CPU with 1.1 ms p99 scheduling lag. p95 stayed at or below 3.6 ms through 1,700 QPS. The knee is at about 1,800 QPS: p95 was 4.5 ms at 1,800, 13 ms at 1,900 and 29 ms at 2,000. The 50 ms p95 failure rule never tripped within the 2,000 QPS ceiling.
+
+**Recommendation:**
+- For whole-string prefix, use an NGRAM index on a normalised field with `like "p%"` and `order_by popularity:desc`.
+- For match-any-word, use the same field with `like_wordstart`.
+- Use `edge_lc` only if you can't normalise the query on the client.
+
+Re-test at 1M+ rows before relying on relative latency.
 
 ## Known caveats
 
